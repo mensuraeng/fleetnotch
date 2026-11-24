@@ -6,7 +6,8 @@ próprios registros (JSONL) e estima o custo por uma tabela de preços local. Na
   python3 modelos.py --precos       a tabela de preços padrão (os Ajustes mostram e editam; a editada mora no config.json)
   python3 modelos.py --demo         dados fictícios (modo demonstração)
 
-Fontes: Claude Code grava cada resposta em <config>/projects/**/*.jsonl (~/.claude, ou o home de cada perfil do Orca);
+Fontes: os agentes Hermes gravam modelo, tokens e custo de cada sessão no state.db de cada perfil (lido em mode=ro);
+Claude Code grava cada resposta em <config>/projects/**/*.jsonl (~/.claude, ou o home de cada perfil do Orca);
 o Codex grava em ~/.codex/sessions/**/*.jsonl (e no home de cada conta do Orca). Perfis que apontam pra mesma pasta
 (link simbólico) são lidos uma vez só e a página avisa que o histórico é compartilhado.
 
@@ -173,7 +174,44 @@ def fontes(c):
     if fonte == 'codex-sessoes':
         dirs = [os.path.expanduser('~/.codex/sessions')] + glob.glob(f'{ORCA}/codex-accounts/*/home/sessions')
         return 'codex', sorted({os.path.realpath(d) for d in dirs})
+    if fonte == 'hermes-state':
+        return 'hermes', hermes_bancos(c)
     return None, []
+
+
+def hermes_bancos(c):
+    """state.db de cada perfil Hermes (o raiz e ~/.hermes/profiles/*), mais homes extras (c['hermesHomes']);
+    perfis em c['ignorar'] ficam de fora (ex.: perfil pessoal que não é da operação)."""
+    homes = [os.path.expanduser('~/.hermes')] + [os.path.expanduser(h) for h in c.get('hermesHomes') or []]
+    ignorar = set(c.get('ignorar') or [])
+    r = []
+    for h in homes:
+        r += [os.path.join(h, 'state.db')] + sorted(glob.glob(os.path.join(h, 'profiles', '*', 'state.db')))
+    return sorted({os.path.realpath(x) for x in r if os.path.exists(x) and hermes_perfil(x) not in ignorar})
+
+
+def hermes_perfil(banco):
+    """'~/.hermes/profiles/rafael/state.db' → 'rafael'; o state.db do raiz de um home → nome do home ('hermes').
+    c['nomes'] renomeia na página (ex.: {'hermes': 'leonard'})."""
+    pai = os.path.dirname(banco)
+    return os.path.basename(pai) if os.path.basename(os.path.dirname(pai)) == 'profiles' else os.path.basename(pai).lstrip('.')
+
+
+def hermes_ler(banco, desde):
+    """[(dia local, modelo, [entrada, saída, cache lido, cache escrito, 0, sessões], custo USD ou None)] do banco do
+    Hermes, só leitura (mode=ro: não trava o gateway). Lê só colunas de contagem: nada de mensagem ou conteúdo."""
+    import sqlite3
+    try:
+        con = sqlite3.connect(f'file:{banco}?mode=ro', uri=True, timeout=2)
+        linhas = con.execute(
+            "select date(started_at,'unixepoch','localtime'), coalesce(model,'?'), sum(input_tokens), sum(output_tokens),"
+            " sum(cache_read_tokens), sum(cache_write_tokens), count(*),"
+            " sum(coalesce(actual_cost_usd, estimated_cost_usd)), sum(case when cost_status='included' then 1 else 0 end)"
+            " from sessions where started_at >= ? group by 1, 2", (desde,)).fetchall()
+        con.close()
+    except sqlite3.Error:
+        return []
+    return [(d, m, [e or 0, s or 0, cl or 0, ce or 0, 0, n], cu if cu and inc < n else None) for d, m, e, s, cl, ce, n, cu, inc in linhas]
 
 
 def janelas(agora):
@@ -270,6 +308,8 @@ def resumo(conta, cfg, agora=None):
     tipo, dirs = fontes(conta)
     if not tipo:
         return {'erro': t('Esta conta não tem fonte local de uso (Ajustes › IA › De onde vem o uso).')}
+    if tipo == 'hermes':
+        return resumo_hermes(conta, cfg, dirs, agora)
     cache = atualizar([(tipo, d) for d in dirs], agora)
     tabela = cfg.get('precos') or PRECOS
     ini = janelas(agora)
@@ -311,6 +351,46 @@ def resumo(conta, cfg, agora=None):
             'dias': [{'dia': d, 'tokens': por_dia.get(d, [0, 0])[0], 'custo': round(por_dia.get(d, [0, 0])[1], 4)} for d in dias]}
 
 
+def resumo_hermes(conta, cfg, bancos, agora):
+    """Mesma página da conta, mas somando os agentes Hermes (todos os perfis) por modelo, e a lista por agente.
+    Custo: o que o Hermes gravou na sessão (assinatura = 'included' não tem custo); sem isso, a tabela de preços."""
+    tabela = cfg.get('precos') or PRECOS
+    ini = janelas(agora)
+    desde = time.mktime(time.strptime(ini['mes'] if ini['mes'] < ini['7d'] else ini['7d'], '%Y-%m-%d'))
+    soma = {j: {} for j in ini}
+    agentes = {j: {} for j in ini}
+    por_dia = {}
+    for b in bancos:
+        quem = (conta.get('nomes') or {}).get(hermes_perfil(b), hermes_perfil(b))
+        for d, m, v, cu in hermes_ler(b, desde):
+            c = cu if cu is not None else custo(v, preco(m, tabela), False)
+            if d >= ini['7d']:
+                dd = por_dia.setdefault(d, [0, 0.0])
+                dd[0] += sum(v[:4])
+                dd[1] += c or 0
+            for j, de in ini.items():
+                if d >= de:
+                    a = soma[j].setdefault(m, [0, 0, 0, 0, 0, 0, 0.0, False])
+                    for i in range(6):
+                        a[i] += v[i]
+                    a[6] += c or 0
+                    a[7] = a[7] or c is None
+                    agentes[j][quem] = agentes[j].get(quem, 0) + sum(v[:4])
+    saida = {}
+    for j, mods in soma.items():
+        lista = [{'id': m, 'nome': nome(m), 'entrada': v[0], 'saida': v[1], 'cacheLe': v[2], 'cacheEscreve': v[3] + v[4],
+                  'respostas': v[5], 'custo': None if v[7] and not v[6] else round(v[6], 4)} for m, v in mods.items()]
+        lista.sort(key=lambda x: (-(x['custo'] or 0), -(x['entrada'] + x['saida'] + x['cacheLe'] + x['cacheEscreve'])))
+        saida[j] = {'modelos': lista, 'custo': round(sum(x['custo'] or 0 for x in lista), 4),
+                    'semPreco': sorted({x['nome'] for x in lista if x['custo'] is None}),
+                    'tokens': sum(x['entrada'] + x['saida'] + x['cacheLe'] + x['cacheEscreve'] for x in lista),
+                    'agentes': [{'agente': k, 'tokens': n} for k, n in sorted(agentes[j].items(), key=lambda kv: -kv[1])]}
+    hoje = time.localtime(agora)
+    dias = [time.strftime('%Y-%m-%d', time.localtime(time.mktime(hoje) - (6 - i) * 86400)) for i in range(7)]
+    return {'conta': conta.get('id'), 'tipo': 'hermes', 'janelas': saida, 'arquivos': len(bancos), 'compartilhado': [],
+            'dias': [{'dia': d, 'tokens': por_dia.get(d, [0, 0])[0], 'custo': round(por_dia.get(d, [0, 0])[1], 4)} for d in dias]}
+
+
 def demo(agora=None):
     """Uma conta fictícia, sempre a mesma (prints do README)."""
     agora = agora or time.time()
@@ -345,7 +425,7 @@ def main():
     cfg = carregar()
     if '--aquecer' in a:
         os.nice(10)
-        pastas = {(f[0], d) for c in cfg['ia'] for f in [fontes(c)] if f[0] for d in f[1]}
+        pastas = {(f[0], d) for c in cfg['ia'] for f in [fontes(c)] if f[0] and f[0] != 'hermes' for d in f[1]}
         atualizar(sorted(pastas))
         print(json.dumps({'ok': True}))
         return

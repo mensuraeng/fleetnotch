@@ -305,6 +305,15 @@ def conta(c, agora=None):
     fonte = c.get('fonte') or (c.get('uso') or {}).get('fonte')
     marca = {'id': c.get('id'), 'rotulo': c['nome'], 'ferramenta': c.get('ferramenta', c['nome']),
              'app': next((a for a in c.get('app', []) if os.path.exists(a)), None)}  # logo: lido do app em runtime pela UI
+    if fonte == 'hermes-state':  # agentes Hermes: não há limite de assinatura; o anel mostra os tokens de hoje
+        import modelos
+        try:
+            r = modelos.resumo(c, CFG, agora)['janelas']
+        except Exception:
+            return dict(marca, pct=0, nivel=-1, card=[t('sem dado de uso')], semFonte=True)
+        h, s = r['hoje'], r['7d']
+        quem = ' · '.join(f"{x['agente']} {x['tokens'] / 1e6:.0f}M" for x in h['agentes'][:3])
+        return dict(marca, pct=0, nivel=0, card=[t('hoje') + f" {h['tokens'] / 1e6:.0f}M · " + t('semana') + f" {s['tokens'] / 1e6:.0f}M", quem or t('sem dado recente')])
     if login(c, agora) is False:  # sem login (ou login vencido): a UI mostra "sem login" e o clique abre o Orca pra entrar
         return dict(marca, pct=0, nivel=-1, card=[t('sem login')], semLogin=True)
     if fonte == 'claude-perfil':

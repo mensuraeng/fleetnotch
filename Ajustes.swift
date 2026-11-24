@@ -676,6 +676,7 @@ struct AbaIA: View {
                     Picker(t("De onde vem o uso"), selection: $c.fonte) {
                         Text(verbatim: "Claude Code").tag("claude-perfil")
                         Text(t("Codex (sessões)")).tag("codex-sessoes")
+                        Text(verbatim: "Hermes (agentes)").tag("hermes-state")
                         Text(t("Sem fonte (só o logo)")).tag("")
                     }
                     if c.fonte == "claude-perfil" {

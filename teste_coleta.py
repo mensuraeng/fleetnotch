@@ -419,3 +419,30 @@ assert modelos.nome('gpt-6.1-terra') == 'GPT-6.1 Terra' and modelos.nome('claude
 assert modelos.preco('claude-opus-5-5', modelos.PRECOS)['entrada'] == 4 and modelos.preco('claude-opus-5', modelos.PRECOS)['entrada'] == 5
 assert modelos.demo()['janelas']['7d']['custo'] > 0
 print('ok modelos')
+
+# agentes Hermes (modelos.py fonte 'hermes-state'): state.db por perfil, só contagem; 'included' sem custo; perfil ignorado fica fora
+import sqlite3 as _sq, tempfile as _tf
+_h = _tf.mkdtemp()
+for _p, _rows in {'': [('gpt-5.6-terra', 100, 10, 1000, 0, None, 'included')],
+                  'profiles/rafael/': [('gpt-5.6-terra', 50, 5, 0, 0, None, 'included'), ('claude-opus-5-5', 1_000_000, 0, 0, 0, None, None)],
+                  'profiles/caio/': [('gpt-5.6-luna', 999, 0, 0, 0, None, None)]}.items():
+    os.makedirs(os.path.join(_h, _p), exist_ok=True)
+    _c = _sq.connect(os.path.join(_h, _p, 'state.db'))
+    _c.execute('create table sessions (started_at real, model text, input_tokens int, output_tokens int, cache_read_tokens int,'
+               ' cache_write_tokens int, actual_cost_usd real, estimated_cost_usd real, cost_status text)')
+    for _m, _e, _s, _cl, _ce, _cu, _st in _rows:
+        _c.execute('insert into sessions values (?,?,?,?,?,?,?,?,?)', (time.time() - 60, _m, _e, _s, _cl, _ce, None, _cu, _st))
+    _c.commit(); _c.close()
+_conta = {'id': 'h', 'fonte': 'hermes-state', 'ignorar': ['caio']}
+_orig = os.path.expanduser
+modelos.os.path.expanduser = lambda x: x.replace('~/.hermes', _h) if x.startswith('~/.hermes') else _orig(x)
+_b = modelos.hermes_bancos(_conta)  # (modelos.fontes foi trocado acima pelo teste do Claude)
+modelos.os.path.expanduser = _orig
+assert sorted(modelos.hermes_perfil(x) for x in _b) == sorted([os.path.basename(_h).lstrip('.'), 'rafael']), _b
+_r = modelos.resumo_hermes(_conta, {}, _b, time.time())['janelas']['hoje']
+_m = {x['id']: x for x in _r['modelos']}
+assert _m['gpt-5.6-terra']['entrada'] == 150 and _m['gpt-5.6-terra']['respostas'] == 2 and _m['gpt-5.6-terra']['custo'] is None, _m
+assert _m['claude-opus-5-5']['custo'] == 4.0, _m  # 1 M de entrada × US$ 4 (tabela)
+assert _r['tokens'] == 1_001_165 and _r['agentes'][0] == {'agente': 'rafael', 'tokens': 1_000_055}, _r
+assert 'gpt-5.6-luna' not in _m  # perfil ignorado
+print('ok hermes')
