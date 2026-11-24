@@ -85,7 +85,8 @@ SERVICO_OK = re.compile(r'^[\w@.:-]+$')  # nome de serviço systemd vira argumen
 def sondar_linux(s):
     args = (['--docker'] if s.get('docker') else []) + [x for x in s.get('servicos') or [] if SERVICO_OK.match(x)]
     porta = ['-p', str(int(s['porta']))] if str(s.get('porta') or '22') != '22' else []
-    rc, out, err = run([*SSH, *porta, destino(s), 'sh', '-s', '--', *args], stdin=SONDA_LINUX, timeout=20)
+    shell = ['wsl', '-d', s['wsl'], '--'] if s.get('wsl') else []  # Arco: Windows com WSL (Surface)
+    rc, out, err = run([*SSH, *porta, destino(s), *shell, 'sh', '-s', '--', *args], stdin=SONDA_LINUX, timeout=20)
     if rc == 0 and out.strip():
         try:
             return json.loads(out.strip().splitlines()[-1]), None
@@ -487,6 +488,9 @@ def backups(agora):
         pid, st = lista.get(rot, ('-', '0'))
         logf = d.get('StandardOutPath') or d.get('StandardErrorPath')
         lm = os.path.getmtime(logf) if logf and os.path.exists(logf) else None
+        extra = os.path.expanduser((SCFG.get('logs') or {}).get(rot, ''))  # Arco: log real do job, fora do launchd
+        if extra and os.path.exists(extra):
+            lm, logf = max(lm or 0, os.path.getmtime(extra)), extra
         cal, inter = d.get('StartCalendarInterval'), d.get('StartInterval')
         devido = _agendado(cal, agora) if cal else (agora - 2 * inter if inter else None)
         rodando = pid != '-'

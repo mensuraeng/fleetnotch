@@ -72,6 +72,6 @@ cat > "$PL" <<EOF
 EOF
 launchctl bootstrap "gui/$(id -u)" "$PL"
 # statusline opcional pro anel do Claude (só com Claude Code instalado; ligar no settings.json: README, "Claude ring")
-[ -d "$HOME/.claude" ] && cp statusline.py "$HOME/.claude/fleetnotch-statusline.py" && chmod +x "$HOME/.claude/fleetnotch-statusline.py"
+false && cp statusline.py "$HOME/.claude/fleetnotch-statusline.py" && chmod +x "$HOME/.claude/fleetnotch-statusline.py"
 echo "ok: $APP running / rodando (LaunchAgent $ROT)"
 echo "uninstall / desinstalar: README.md#uninstall"

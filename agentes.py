@@ -76,7 +76,7 @@ def hermes(a, agora):
     serv = servicos(a.get('rotulo') or 'ai.hermes.')
     g = _json(f'{raiz}/gateway_state.json') or {}
     hb = _iso((_json(f'{raiz}/state/gateway.heartbeat') or {}).get('updated_at'))
-    gw = next((s for s in serv if s['nome'] == 'gateway'), None)
+    gw = next((s for s in serv if s['nome'] == 'gateway' or s['rotulo'] == a.get('rotulo')), None)  # Arco: rótulo exato do gateway
     vivo = bool(gw and gw['pid']) and g.get('gateway_state') == 'running'
     fresco = hb is not None and agora - hb < 180
     estado = 'no ar' if vivo and fresco else 'travado' if vivo else 'parado'
@@ -85,7 +85,8 @@ def hermes(a, agora):
             estado = 'estacionado'
         elif g.get('served_profiles') and perfil not in g['served_profiles']:
             estado = 'fora do gateway'
-    plat = g.get('platforms') or {}
+    plat = {k: v for k, v in (g.get('platforms') or {}).items()  # Arco: ignora canal gravado por gateway antigo (pid morto)
+            if not v.get('writer_pid') or not g.get('pid') or v['writer_pid'] == g['pid']}
     meus = {k: v for k, v in plat.items() if ':' not in k} if principal else \
         {k.split(':', 1)[1]: v for k, v in plat.items() if k.startswith(perfil + ':')}
     canais = [canal({'whatsapp': 'WhatsApp', 'telegram': 'Telegram'}.get(k, k.title()), v.get('state')) for k, v in sorted(meus.items())]
